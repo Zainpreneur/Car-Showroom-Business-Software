@@ -1,0 +1,106 @@
+// Car Showroom Business Software - Database Schema
+// Default datasource is SQLite for zero-config local/dev use.
+// For production, set DATABASE_URL to a Postgres/MySQL connection string
+// and change the provider below to "postgresql" (Postgres supports native
+// enums; SQLite does not, which is why the enum-like fields below are
+// plain Strings validated by Zod at the API layer — see src/routes/*).
+//
+// Allowed values:
+//   User.role         -> ADMIN | MANAGER | SALESPERSON
+//   Vehicle.status     -> IN_STOCK | RESERVED | SOLD
+//   Sale.paymentMethod -> CASH | CARD | BANK_TRANSFER | FINANCE | LEASE
+//   Sale.status         -> PENDING | COMPLETED | CANCELLED
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   @default("SALESPERSON")
+  active       Boolean  @default(true)
+  phone        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sales Sale[]
+
+  @@map("users")
+}
+
+model Vehicle {
+  id           Int      @id @default(autoincrement())
+  make         String
+  model        String
+  year         Int
+  vin          String   @unique
+  color        String?
+  mileage      Int      @default(0)
+  bodyType     String?
+  transmission String?
+  fuelType     String?
+  costPrice    Float
+  sellingPrice Float
+  status       String   @default("IN_STOCK")
+  description  String?
+  imageUrl     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sale Sale?
+
+  @@map("vehicles")
+}
+
+model Customer {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String?
+  phone     String
+  address   String?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales Sale[]
+
+  @@map("customers")
+}
+
+model Sale {
+  id            Int      @id @default(autoincrement())
+  vehicle       Vehicle  @relation(fields: [vehicleId], references: [id])
+  vehicleId     Int      @unique
+  customer      Customer @relation(fields: [customerId], references: [id])
+  customerId    Int
+  salesperson   User     @relation(fields: [salespersonId], references: [id])
+  salespersonId Int
+  salePrice     Float
+  paymentMethod String   @default("CASH")
+  status        String   @default("COMPLETED")
+  saleDate      DateTime @default(now())
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("sales")
+}
+
+model Expense {
+  id          Int      @id @default(autoincrement())
+  category    String
+  description String?
+  amount      Float
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@map("expenses")
+}
