@@ -1,15 +1,10 @@
 // Car Showroom Business Software - Database Schema
+// Multi-tenant capable: each table has businessId for data isolation
 // Default datasource is SQLite for zero-config local/dev use.
 // For production, set DATABASE_URL to a Postgres/MySQL connection string
 // and change the provider below to "postgresql" (Postgres supports native
 // enums; SQLite does not, which is why the enum-like fields below are
 // plain Strings validated by Zod at the API layer — see src/routes/*).
-//
-// Allowed values:
-//   User.role         -> ADMIN | MANAGER | SALESPERSON
-//   Vehicle.status     -> IN_STOCK | RESERVED | SOLD
-//   Sale.paymentMethod -> CASH | CARD | BANK_TRANSFER | FINANCE | LEASE
-//   Sale.status         -> PENDING | COMPLETED | CANCELLED
 
 generator client {
   provider = "prisma-client-js"
@@ -20,20 +15,75 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Business {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ownerId Int?
+  owner   User? @relation("BusinessOwner", fields: [ownerId], references: [id])
+
+  timezone String  @default("UTC")
+  currency String  @default("USD")
+  active   Boolean @default(true)
+
+  users                   User[]                   @relation("BusinessUsers")
+  vehicles                Vehicle[]
+  customers               Customer[]
+  sales                   Sale[]
+  expenses                Expense[]
+  tickets                 Ticket[]
+  shifts                  Shift[]
+  leaveRequests           LeaveRequest[]
+  membershipPlans         MembershipPlan[]
+  membershipSubscriptions MembershipSubscription[]
+  inventorySupplies       Supply[]
+  purchaseOrders          PurchaseOrder[]
+  stockAdjustments        StockAdjustment[]
+  serviceBays             ServiceBay[]
+  washOrders              WashOrder[]
+  washPackages            WashPackage[]
+  vehicleTypePricings     VehicleTypePricing[]
+  packagePricings         PackagePricing[]
+  packageSupplyUsages     PackageSupplyUsage[]
+  notifications           Notification[]
+  sequences               Sequence[]
+  settings                Settings?
+  employees               Employee[]
+  suppliers               Supplier[]
+  purchaseOrderLines      PurchaseOrderLine[]
+  ticketComments          TicketComment[]
+}
+
 model User {
   id           Int      @id @default(autoincrement())
   name         String
   email        String   @unique
   passwordHash String
-  role         String   @default("SALESPERSON")
+  role         String   @default("SALESPERSON") // ADMIN | MANAGER | SALESPERSON
   active       Boolean  @default(true)
   phone        String?
+  avatarColor  String   @default("#2563eb")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  sales Sale[]
+  businessId String
 
-  @@map("users")
+  business           Business          @relation("BusinessUsers", fields: [businessId], references: [id])
+  sales              Sale[]            @relation("UserSales")
+  customers          Customer[]        @relation("UserCustomers")
+  employees          Employee[]        @relation("UserEmployees")
+  tickets            Ticket[]          @relation("UserTickets")
+  shifts             Shift[]           @relation("UserShifts")
+  leaveRequests      LeaveRequest[]    @relation("UserLeaveRequests")
+  ownedBusinesses    Business[]        @relation("BusinessOwner")
+  washOrdersCreated  WashOrder[]       @relation("WashOrderCreator")
+  washOrdersAssigned WashOrder[]       @relation("WashOrderTechnician")
+  notifications      Notification[]
+  stockAdjustments   StockAdjustment[]
+  ticketComments     TicketComment[]
 }
 
 model Vehicle {
@@ -49,15 +99,23 @@ model Vehicle {
   fuelType     String?
   costPrice    Float
   sellingPrice Float
-  status       String   @default("IN_STOCK")
+  status       String   @default("IN_STOCK") // IN_STOCK | RESERVED | SOLD
   description  String?
   imageUrl     String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  sale Sale?
+  businessId String
 
-  @@map("vehicles")
+  business               Business                 @relation(fields: [businessId], references: [id])
+  sale                   Sale[]                   @relation("VehicleSales") // linked sales (one per business)
+  customer               Customer?                @relation(fields: [customerId], references: [id]) // previous customer who owned it
+  washOrders             WashOrder[]
+  customerId             Int?
+  MembershipSubscription MembershipSubscription[]
+
+  @@unique([vin, businessId]) // VIN must be unique per business
+  @@index([businessId])
 }
 
 model Customer {
@@ -70,37 +128,510 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sales Sale[]
+  businessId String
 
-  @@map("customers")
+  business               Business                 @relation(fields: [businessId], references: [id])
+  sales                  Sale[]                   @relation("CustomerSales")
+  tickets                Ticket[]                 @relation("CustomerTickets")
+  washOrders             WashOrder[]              @relation("CustomerWashOrders")
+  assignedSalesperson    User?                    @relation("UserCustomers", fields: [salespersonId], references: [id])
+  salespersonId          Int?
+  Vehicle                Vehicle[]
+  MembershipSubscription MembershipSubscription[]
+
+  @@unique([email, businessId])
+  @@index([businessId])
 }
 
 model Sale {
   id            Int      @id @default(autoincrement())
-  vehicle       Vehicle  @relation(fields: [vehicleId], references: [id])
-  vehicleId     Int      @unique
-  customer      Customer @relation(fields: [customerId], references: [id])
+  vehicle       Vehicle? @relation("VehicleSales", fields: [vehicleId], references: [id])
+  vehicleId     Int? // nullable since sale can be created before vehicle full setup
+  customer      Customer @relation("CustomerSales", fields: [customerId], references: [id])
   customerId    Int
-  salesperson   User     @relation(fields: [salespersonId], references: [id])
+  salesperson   User     @relation("UserSales", fields: [salespersonId], references: [id])
   salespersonId Int
   salePrice     Float
-  paymentMethod String   @default("CASH")
-  status        String   @default("COMPLETED")
+  paymentMethod String   @default("CASH") // CASH | CARD | BANK_TRANSFER | FINANCE | LEASE
+  status        String   @default("COMPLETED") // PENDING | COMPLETED | CANCELLED
   saleDate      DateTime @default(now())
   notes         String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  @@map("sales")
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([vehicleId, businessId]) // each vehicle sold only once per business
+  @@index([businessId])
 }
 
 model Expense {
   id          Int      @id @default(autoincrement())
-  category    String
+  category    String // OPERATING | MAINTENANCE | UTILITIES | OTHER
   description String?
   amount      Float
   date        DateTime @default(now())
   createdAt   DateTime @default(now())
 
-  @@map("expenses")
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+}
+
+model Ticket {
+  id               Int       @id @default(autoincrement())
+  subject          String
+  description      String?
+  category         String // DAMAGE_CLAIM | BILLING_DISPUTE | QUALITY_COMPLAINT | MEMBERSHIP_QUESTION | GENERAL
+  priority         String // LOW | NORMAL | HIGH | URGENT
+  status           String // OPEN | IN_PROGRESS | RESOLVED | CLOSED
+  source           String // WHATSAPP | PHONE | GOOGLE_BUSINESS_PROFILE | IN_APP
+  firstRespondedAt DateTime?
+  resolvedAt       DateTime?
+  closedAt         DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  businessId String
+
+  business     Business        @relation(fields: [businessId], references: [id])
+  customer     Customer?       @relation("CustomerTickets", fields: [customerId], references: [id])
+  customerId   Int?
+  assignedTo   User?           @relation("UserTickets", fields: [assignedToId], references: [id])
+  assignedToId Int?
+  comments     TicketComment[]
+
+  @@index([businessId])
+  @@index([status])
+  @@index([priority])
+}
+
+model TicketComment {
+  id         Int      @id @default(autoincrement())
+  ticketId   Int
+  ticket     Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId   Int
+  author     User     @relation(fields: [authorId], references: [id])
+  authorType String   @default("STAFF") // STAFF | SYSTEM
+  body       String
+  createdAt  DateTime @default(now())
+
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([ticketId])
+}
+
+model Employee {
+  id             Int      @id @default(autoincrement())
+  userId         Int? // nullable — links to Users table; can exist without login
+  name           String
+  phone          String?
+  email          String?
+  position       String // e.g. "wash-technician", "detail-technician", "cashier", "site-manager"
+  status         String // applicant | hired | onboarding | active | on-leave | offboarded
+  hireDate       DateTime @default(now())
+  commissionRate Float // detail-technician only (10% of package pricing)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  businessId String
+
+  business                 Business          @relation(fields: [businessId], references: [id])
+  user                     User?             @relation("UserEmployees", fields: [userId], references: [id])
+  shifts                   Shift[]
+  leaveRequests            LeaveRequest[]
+  stockAdjustmentsApproved StockAdjustment[] @relation("EmployeeApprovedAdjustments")
+
+  @@unique([userId, businessId]) // one user can have at most one employee record per business
+  @@index([businessId])
+}
+
+model Shift {
+  id           Int         @id @default(autoincrement())
+  employee     Employee    @relation(fields: [employeeId], references: [id])
+  employeeId   Int
+  bay          ServiceBay? @relation(fields: [bayId], references: [id])
+  bayId        Int?
+  user         User?       @relation("UserShifts", fields: [userId], references: [id])
+  userId       Int?
+  startsAt     DateTime
+  endsAt       DateTime
+  status       String // SCHEDULED | COMPLETED | NO_SHOW | CANCELLED
+  checkedInAt  DateTime?
+  checkedOutAt DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([employeeId])
+}
+
+model LeaveRequest {
+  id           Int      @id @default(autoincrement())
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  employeeId   Int
+  startDate    DateTime
+  endDate      DateTime
+  reason       String?
+  status       String // PENDING | APPROVED | DENIED
+  approvedBy   User?    @relation("UserLeaveRequests", fields: [approvedById], references: [id])
+  approvedById Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([employeeId])
+}
+
+model MembershipPlan {
+  id                Int      @id @default(autoincrement())
+  name              String // e.g. "Basic Unlimited", "Premium Unlimited", "Fleet Unlimited"
+  tier              String // BASIC | PREMIUM | FLEET
+  description       String?
+  monthlyPrice      Float
+  isUnlimited       Boolean  @default(true)
+  washesPerMonthCap Int? // null if unlimited
+  rolloverAllowed   Boolean  @default(false)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  businessId String
+
+  business      Business                 @relation(fields: [businessId], references: [id])
+  subscriptions MembershipSubscription[]
+
+  @@unique([name, businessId]) // plan names unique per business
+  @@index([businessId])
+}
+
+model MembershipSubscription {
+  id                    Int            @id @default(autoincrement())
+  customer              Customer       @relation(fields: [customerId], references: [id])
+  customerId            Int
+  vehicle               Vehicle?       @relation(fields: [vehicleId], references: [id])
+  vehicleId             Int?
+  plan                  MembershipPlan @relation(fields: [planId], references: [id])
+  planId                Int
+  billingDayOfMonth     Int
+  nextBillingDate       DateTime?
+  pausedUntil           DateTime?
+  washesThisCycle       Int            @default(0)
+  failedPaymentAttempts Int            @default(0)
+  firstFailedAt         DateTime?
+  status                String // ACTIVE | PAST_DUE | SUSPENDED | CANCELLED
+  stripePriceId         String? // for real Stripe integration
+  stripeSubscriptionId  String? // for real Stripe integration
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([vehicleId, businessId]) // one active subscription per vehicle
+  @@unique([customerId, vehicleId, businessId]) // one subscription per customer-vehicle pair
+  @@index([businessId])
+  @@index([customerId, businessId])
+}
+
+model Supplier {
+  id           Int      @id @default(autoincrement())
+  name         String
+  contactName  String?
+  phone        String?
+  email        String?
+  leadTimeDays Int      @default(7)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  businessId String
+
+  business      Business        @relation(fields: [businessId], references: [id])
+  supplies      Supply[]
+  PurchaseOrder PurchaseOrder[]
+
+  @@unique([name, businessId])
+  @@index([businessId])
+}
+
+model Supply {
+  id             Int       @id @default(autoincrement())
+  name           String
+  description    String?
+  unit           String // e.g. gallon, case, roll
+  quantityOnHand Float     @default(0)
+  unitCost       Float     @default(0)
+  reorderLevel   Float     @default(10) // minimum stock to trigger reorder
+  active         Boolean   @default(true)
+  warehouse      String // MAIN_CHEMICAL_ROOM | DETAIL_BAY_STORAGE
+  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  supplierId     Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  businessId String
+
+  business            Business             @relation(fields: [businessId], references: [id])
+  purchaseOrderLines  PurchaseOrderLine[]
+  packagePricings     PackagePricing[]
+  packageSupplyUsages PackageSupplyUsage[]
+  StockAdjustment     StockAdjustment[]
+
+  @@unique([name, businessId]) // supply name unique per business
+  @@index([businessId])
+}
+
+model PurchaseOrder {
+  id          Int       @id @default(autoincrement())
+  supplier    Supplier  @relation(fields: [supplierId], references: [id])
+  supplierId  Int
+  status      String // DRAFT | SENT | PARTIALLY_RECEIVED | RECEIVED | CLOSED
+  totalAmount Float
+  source      String // MANUAL | ESTIMATED
+  sentAt      DateTime?
+  receivedAt  DateTime?
+  closedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  businessId String
+
+  business           Business            @relation(fields: [businessId], references: [id])
+  purchaseOrderLines PurchaseOrderLine[]
+
+  @@index([businessId])
+}
+
+model PurchaseOrderLine {
+  id               Int           @id @default(autoincrement())
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderId  Int
+  supply           Supply        @relation(fields: [supplyId], references: [id])
+  supplyId         Int
+  quantityOrdered  Float         @default(0)
+  quantityReceived Float         @default(0)
+  unitCost         Float         @default(0)
+  createdAt        DateTime      @default(now())
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([purchaseOrderId, supplyId]) // one supply line per purchase order
+  @@index([businessId])
+}
+
+model StockAdjustment {
+  id            Int      @id @default(autoincrement())
+  supply        Supply   @relation(fields: [supplyId], references: [id])
+  supplyId      Int
+  quantityDelta Float // negative = loss, positive = count correction
+  reasonCode    String // BREAKAGE | SPILLAGE | THEFT | EXPIRED | COUNT_CORRECTION
+  notes         String?
+  approvedBy    Employee @relation("EmployeeApprovedAdjustments", fields: [approvedById], references: [id])
+  approvedById  Int
+  createdBy     User     @relation(fields: [userId], references: [id])
+  createdAt     DateTime @default(now())
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+  userId   Int
+
+  @@index([businessId])
+}
+
+model ServiceBay {
+  id                   Int      @id @default(autoincrement())
+  bayNumber            Int      @unique
+  bayType              String // TUNNEL_CONVEYOR | DETAIL_BAY
+  status               String // OPERATIONAL | DEGRADED | DOWN | RETIRED
+  avgThroughputPerHour Float?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  businessId String
+
+  business  Business    @relation(fields: [businessId], references: [id])
+  shifts    Shift[]
+  WashOrder WashOrder[]
+
+  @@unique([bayNumber, businessId]) // bay numbers unique per business
+  @@index([businessId])
+}
+
+model WashOrder {
+  id                   Int          @id @default(autoincrement())
+  orderNumber          String       @unique
+  customer             Customer?    @relation("CustomerWashOrders", fields: [customerId], references: [id])
+  customerId           Int?
+  vehicle              Vehicle?     @relation(fields: [vehicleId], references: [id])
+  vehicleId            Int?
+  package              WashPackage? @relation(fields: [packageId], references: [id])
+  packageId            Int?
+  serviceBay           ServiceBay?  @relation(fields: [serviceBayId], references: [id])
+  serviceBayId         Int?
+  assignedTechnician   User?        @relation("WashOrderTechnician", fields: [assignedTechnicianId], references: [id])
+  assignedTechnicianId Int?
+  bookingType          String // WALK_IN | APPOINTMENT
+  scheduledFor         DateTime?
+  queuePosition        Int
+  queuedAt             DateTime     @default(now())
+  bayAssignedAt        DateTime?
+  washStartedAt        DateTime?
+  washCompletedAt      DateTime?
+  checkedOutAt         DateTime?
+  status               String // QUEUED | BAY_ASSIGNED | IN_WASH | QUALITY_CHECK | READY_FOR_PICKUP | COMPLETED | CANCELLED
+  qcResult             String? // PASS | FAIL — set by human technician only
+  price                Float
+  paymentMethod        String // MEMBERSHIP | CARD | CASH | FLEET_INVOICE
+  promoCode            String?
+  createdBy            User         @relation("WashOrderCreator", fields: [createdById], references: [id])
+  createdById          Int
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([orderNumber, businessId])
+  @@index([businessId])
+  @@index([status])
+  @@index([vehicleId, businessId])
+}
+
+model WashPackage {
+  id                  Int      @id @default(autoincrement())
+  name                String // e.g. "Express Exterior", "Exterior Plus", "Signature Full Service"
+  tier                String // EXPRESS | EXTERIOR_PLUS | SIGNATURE | PREMIUM_HAND_DETAIL
+  description         String?
+  avgCycleTimeMinutes Int      @default(15)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  businessId String
+
+  business            Business             @relation(fields: [businessId], references: [id])
+  packagePricings     PackagePricing[]
+  vehicleTypePricings VehicleTypePricing[]
+  WashOrder           WashOrder[]
+  PackageSupplyUsage  PackageSupplyUsage[]
+
+  @@unique([name, businessId])
+  @@index([businessId])
+}
+
+model VehicleTypePricing {
+  id                       Int         @id @default(autoincrement())
+  package                  WashPackage @relation(fields: [packageId], references: [id])
+  packageId                Int
+  vehicleType              String // SEDAN | SUV | VAN | MOTORCYCLE
+  price                    Float
+  estimatedDurationMinutes Int         @default(30)
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([packageId, vehicleType, businessId])
+  @@index([businessId])
+}
+
+model PackagePricing {
+  id              Int         @id @default(autoincrement())
+  package         WashPackage @relation(fields: [packageId], references: [id])
+  packageId       Int
+  supply          Supply      @relation(fields: [supplyId], references: [id])
+  supplyId        Int
+  quantityPerWash Float // how much of supply one wash of this package consumes
+  createdAt       DateTime    @default(now())
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([packageId, supplyId, businessId])
+  @@index([businessId])
+}
+
+model PackageSupplyUsage {
+  id              Int         @id @default(autoincrement())
+  package         WashPackage @relation(fields: [packageId], references: [id])
+  packageId       Int
+  supply          Supply      @relation(fields: [supplyId], references: [id])
+  supplyId        Int
+  quantityPerWash Float // how much of supply one wash of this package consumes
+  createdAt       DateTime    @default(now())
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([packageId, supplyId, businessId])
+  @@index([businessId])
+}
+
+model Notification {
+  id          Int      @id @default(autoincrement())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      Int
+  type        String // SYSTEM | MAINTENANCE | BILLING | MEMBERSHIP | WASH_FLOOR | TICKET
+  title       String
+  message     String
+  relatedId   Int? // e.g. washOrderId, ticketId, subscriptionId
+  relatedType String? // e.g. "washOrder", "ticket", "membershipSubscription"
+  read        Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  businessId String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([read])
+}
+
+model Sequence {
+  id           Int    @id @default(autoincrement())
+  name         String // e.g. "orderNumber", "bookingNumber", "saleInvoiceNumber"
+  currentValue Int    @default(0)
+  prefix       String // e.g. "SR-", "HD-", "SR-"
+  suffix       String // e.g. "", "-2024"
+  businessId   String
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([name, businessId])
+}
+
+model Settings {
+  id             Int      @id @default(autoincrement())
+  business       Business @relation(fields: [businessId], references: [id])
+  businessId     String
+  currency       String   @default("USD")
+  timezone       String   @default("UTC")
+  logoUrl        String?
+  welcomeMessage String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([businessId])
 }

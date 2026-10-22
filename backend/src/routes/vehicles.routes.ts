@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { ApiError } from "../middleware/errorHandler";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth, requireRole, AuthRequest } from "../middleware/auth";
 
 const router = Router();
 router.use(requireAuth);
@@ -25,10 +25,11 @@ const vehicleSchema = z.object({
 });
 
 // GET /api/vehicles?status=IN_STOCK&search=civic&page=1&pageSize=20
-router.get("/", async (req, res) => {
+router.get("/", async (req: AuthRequest, res) => {
   const { status, search, page = "1", pageSize = "20" } = req.query as Record<string, string>;
+  const businessId = req.businessId!;
 
-  const where: any = {};
+  const where: any = { businessId };
   if (status) where.status = status;
   if (search) {
     where.OR = [
@@ -50,37 +51,43 @@ router.get("/", async (req, res) => {
   res.json({ items, total, page: Number(page) || 1, pageSize: take });
 });
 
-router.get("/:id", async (req, res) => {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: Number(req.params.id) },
+router.get("/:id", async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
+  const vehicle = await prisma.vehicle.findFirst({
+    where: { id: Number(req.params.id), businessId },
     include: { sale: { include: { customer: true, salesperson: true } } },
   });
   if (!vehicle) throw new ApiError(404, "Vehicle not found");
   res.json(vehicle);
 });
 
-router.post("/", requireRole("ADMIN", "MANAGER"), async (req, res) => {
+router.post("/", requireRole("ADMIN", "MANAGER"), async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const data = vehicleSchema.parse(req.body);
-  const vehicle = await prisma.vehicle.create({ data });
+  const vehicle = await prisma.vehicle.create({ 
+    data: { ...data, businessId } 
+  });
   res.status(201).json(vehicle);
 });
 
-router.put("/:id", requireRole("ADMIN", "MANAGER"), async (req, res) => {
+router.put("/:id", requireRole("ADMIN", "MANAGER"), async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const data = vehicleSchema.partial().parse(req.body);
   const vehicle = await prisma.vehicle.update({
-    where: { id: Number(req.params.id) },
+    where: { id: Number(req.params.id), businessId },
     data,
   });
   res.json(vehicle);
 });
 
-router.delete("/:id", requireRole("ADMIN", "MANAGER"), async (req, res) => {
+router.delete("/:id", requireRole("ADMIN", "MANAGER"), async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const id = Number(req.params.id);
-  const sale = await prisma.sale.findUnique({ where: { vehicleId: id } });
+  const sale = await prisma.sale.findFirst({ where: { vehicleId: id, businessId } });
   if (sale) {
     throw new ApiError(400, "Cannot delete a vehicle that has a sale record. Cancel the sale first.");
   }
-  await prisma.vehicle.delete({ where: { id } });
+  await prisma.vehicle.delete({ where: { id, businessId } });
   res.status(204).send();
 });
 

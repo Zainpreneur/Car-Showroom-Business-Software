@@ -13,6 +13,7 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
   role: z.enum(["ADMIN", "MANAGER", "SALESPERSON"]).optional(),
+  businessName: z.string().min(2).optional(), // for first user bootstrap
 });
 
 const loginSchema = z.object({
@@ -31,6 +32,15 @@ router.post("/register", async (req, res) => {
     throw new ApiError(403, "Registration is closed. Ask an admin to create your account.");
   }
 
+  // Create a business for the first user
+  const business = await prisma.business.create({
+    data: {
+      name: data.businessName || "My Showroom",
+      description: "Auto-created business for first user",
+      ownerId: 1, // Will be updated after user creation
+    },
+  });
+
   const passwordHash = await bcrypt.hash(data.password, 10);
   const user = await prisma.user.create({
     data: {
@@ -38,13 +48,32 @@ router.post("/register", async (req, res) => {
       email: data.email,
       passwordHash,
       role: "ADMIN", // first user bootstraps as admin
+      businessId: business.id,
     },
   });
 
-  const token = signToken({ id: user.id, email: user.email, role: user.role, name: user.name });
+  // Update business owner
+  await prisma.business.update({
+    where: { id: business.id },
+    data: { ownerId: user.id },
+  });
+
+  const token = signToken({ 
+    id: user.id, 
+    email: user.email, 
+    role: user.role, 
+    name: user.name,
+    businessId: business.id 
+  });
   res.status(201).json({
     token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { 
+      id: user.id, 
+      name: user.name, 
+      email: user.email, 
+      role: user.role,
+      businessId: business.id 
+    },
   });
 });
 
@@ -60,17 +89,36 @@ router.post("/login", async (req, res) => {
     throw new ApiError(401, "Invalid email or password");
   }
 
-  const token = signToken({ id: user.id, email: user.email, role: user.role, name: user.name });
+  const token = signToken({ 
+    id: user.id, 
+    email: user.email, 
+    role: user.role, 
+    name: user.name,
+    businessId: user.businessId 
+  });
   res.json({
     token,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    user: { 
+      id: user.id, 
+      name: user.name, 
+      email: user.email, 
+      role: user.role,
+      businessId: user.businessId 
+    },
   });
 });
 
 router.get("/me", requireAuth, async (req: AuthRequest, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
   if (!user) throw new ApiError(404, "User not found");
-  res.json({ id: user.id, name: user.name, email: user.email, role: user.role, phone: user.phone });
+  res.json({ 
+    id: user.id, 
+    name: user.name, 
+    email: user.email, 
+    role: user.role, 
+    phone: user.phone,
+    businessId: user.businessId 
+  });
 });
 
 router.get("/bootstrap-status", async (_req, res) => {

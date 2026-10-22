@@ -17,10 +17,11 @@ const saleSchema = z.object({
   notes: z.string().optional(),
 });
 
-router.get("/", async (req, res) => {
+router.get("/", async (req: AuthRequest, res) => {
   const { status, page = "1", pageSize = "20" } = req.query as Record<string, string>;
+  const businessId = req.businessId!;
 
-  const where: any = {};
+  const where: any = { businessId };
   if (status) where.status = status;
 
   const take = Math.min(Number(pageSize) || 20, 100);
@@ -40,9 +41,10 @@ router.get("/", async (req, res) => {
   res.json({ items, total, page: Number(page) || 1, pageSize: take });
 });
 
-router.get("/:id", async (req, res) => {
-  const sale = await prisma.sale.findUnique({
-    where: { id: Number(req.params.id) },
+router.get("/:id", async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
+  const sale = await prisma.sale.findFirst({
+    where: { id: Number(req.params.id), businessId },
     include: { vehicle: true, customer: true, salesperson: { select: { id: true, name: true, email: true } } },
   });
   if (!sale) throw new ApiError(404, "Sale not found");
@@ -50,13 +52,14 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const data = saleSchema.parse(req.body);
 
-  const vehicle = await prisma.vehicle.findUnique({ where: { id: data.vehicleId } });
+  const vehicle = await prisma.vehicle.findFirst({ where: { id: data.vehicleId, businessId } });
   if (!vehicle) throw new ApiError(404, "Vehicle not found");
   if (vehicle.status === "SOLD") throw new ApiError(400, "This vehicle has already been sold");
 
-  const customer = await prisma.customer.findUnique({ where: { id: data.customerId } });
+  const customer = await prisma.customer.findFirst({ where: { id: data.customerId, businessId } });
   if (!customer) throw new ApiError(404, "Customer not found");
 
   const sale = await prisma.$transaction(async (tx) => {
@@ -70,6 +73,7 @@ router.post("/", async (req: AuthRequest, res) => {
         status: data.status,
         saleDate: data.saleDate ?? new Date(),
         notes: data.notes,
+        businessId,
       },
       include: { vehicle: true, customer: true, salesperson: { select: { id: true, name: true, email: true } } },
     });
@@ -87,11 +91,12 @@ router.post("/", async (req: AuthRequest, res) => {
   res.status(201).json(sale);
 });
 
-router.put("/:id", async (req, res) => {
+router.put("/:id", async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const id = Number(req.params.id);
   const data = saleSchema.partial().parse(req.body);
 
-  const existing = await prisma.sale.findUnique({ where: { id } });
+  const existing = await prisma.sale.findFirst({ where: { id, businessId } });
   if (!existing) throw new ApiError(404, "Sale not found");
 
   const sale = await prisma.$transaction(async (tx) => {
@@ -101,7 +106,7 @@ router.put("/:id", async (req, res) => {
       include: { vehicle: true, customer: true, salesperson: { select: { id: true, name: true, email: true } } },
     });
 
-    if (data.status) {
+    if (data.status && updated.vehicleId) {
       const vehicleStatus = data.status === "CANCELLED" ? "IN_STOCK" : data.status === "PENDING" ? "RESERVED" : "SOLD";
       await tx.vehicle.update({ where: { id: updated.vehicleId }, data: { status: vehicleStatus } });
     }
@@ -112,14 +117,17 @@ router.put("/:id", async (req, res) => {
   res.json(sale);
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req: AuthRequest, res) => {
+  const businessId = req.businessId!;
   const id = Number(req.params.id);
-  const existing = await prisma.sale.findUnique({ where: { id } });
+  const existing = await prisma.sale.findFirst({ where: { id, businessId } });
   if (!existing) throw new ApiError(404, "Sale not found");
 
   await prisma.$transaction(async (tx) => {
     await tx.sale.delete({ where: { id } });
-    await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "IN_STOCK" } });
+    if (existing.vehicleId) {
+      await tx.vehicle.update({ where: { id: existing.vehicleId }, data: { status: "IN_STOCK" } });
+    }
   });
 
   res.status(204).send();
